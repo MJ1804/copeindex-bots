@@ -42,8 +42,26 @@ async def main():
     ]:
         if os.environ.get(env_key):
             mod = __import__(fn, fromlist=["main"])
-            log.info(f"✅ {label} registered")
-            tasks.append(asyncio.create_task(mod.main(), name=label))
+            if label == "grind":
+                # Grind bot uses telegram Application.run_polling() which breaks
+                # shared event loops — run it in its own thread + loop
+                def _run_grind():
+                    grind_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(grind_loop)
+                    try:
+                        grind_loop.run_until_complete(mod.main())
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                    finally:
+                        grind_loop.close()
+                log.info("✅ grind registered (threaded)")
+                t = threading.Thread(target=_run_grind, name="grind", daemon=True)
+                t.start()
+                grind_thread = t
+            else:
+                log.info(f"✅ {label} registered")
+                tasks.append(asyncio.create_task(mod.main(), name=label))
         else:
             log.warning(f"⚠️  {label} skipped — no token")
 
@@ -51,7 +69,7 @@ async def main():
         log.error("No bots configured — nothing to do")
         return
 
-    log.info(f"Running {len(tasks)} bot(s) + API")
+    log.info(f"Running {len(tasks)} bot(s) + API + grind(threaded)")
     try:
         await asyncio.gather(*tasks)
     except KeyboardInterrupt:

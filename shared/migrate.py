@@ -5,7 +5,7 @@ Creates all tables via SQLAlchemy metadata.create_all().
 Safe to run idempotently — CREATE IF NOT EXISTS is implied.
 
 Usage:
-    python shared/migrate.py
+    python3 shared/migrate.py
 """
 
 import logging

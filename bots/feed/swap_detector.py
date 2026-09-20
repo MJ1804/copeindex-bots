@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import requests
+from sqlalchemy import select
+from shared.models import SwapEvent
 
 log = logging.getLogger("feed.swap_detector")
 
@@ -145,20 +147,15 @@ def _dexswaps() -> list[dict]:
 
 # ── Alchemy Transfers fallback ─────────────────────────
 
-def _alchemy_swaps() -> list[dict]:
+def _alchemy_swaps(session) -> list[dict]:
     """
     Scan COPE ERC-20 Transfer events via Alchemy.
 
     Strategy for Uniswap V4:
       - V4 uses hook contracts, not a direct pool address
-      - Track ALL large COPE transfers and determine direction by from/to addresses
-      - from = real wallet, to = non-deployer → BUY
-      - from = non-deployer, to = real wallet → SELL
-      - Ignore mints (from = 0x0) and LP routing addresses
-
-    Known non-user addresses to exclude:
-      0x0000000000000000000000000000000000000000 (mints)
-      0x000000000004444c5dc75cb358380d2e3de08a90 (deployer/warmup)
+      - Track ALL large COPE transfers, ignore mints and deployer
+      - Resume from the highest block_number stored in the DB
+        (survives Railway redeploys / ephemeral filesystem)
     """
     api_key = os.environ.get("ALCHEMY_API_KEY", "")
     if not api_key:
@@ -169,14 +166,14 @@ def _alchemy_swaps() -> list[dict]:
     if not COPE_TOKEN or COPE_TOKEN.startswith("0x..."):
         return []
 
-    # Track the last scanned block so we only scan forward
-    # Persist in env var (simple, survives restarts if Railway keeps env)
-    last_block_file = "/tmp/feed_last_block.txt"
-    try:
-        with open(last_block_file) as f:
-            from_block = int(f.read().strip() or "0", 0)
-    except Exception:
-        from_block = 0  # first run: scan from deployment block
+    # Resume from the highest stored block number in the DB
+    last_record = session.scalars(
+        select(SwapEvent.block_number)
+        .where(SwapEvent.block_number > 0)
+        .order_by(SwapEvent.block_number.desc())
+        .limit(1)
+    ).first()
+    from_block = last_record or 0x18d06ff  # deployment block fallback
 
     url = f"https://eth-mainnet.g.alchemy.com/v2/{api_key}"
 
@@ -190,19 +187,11 @@ def _alchemy_swaps() -> list[dict]:
         log.warning("Failed to get latest block: %s", e)
         return []
 
-    # Save the latest block for next run
-    try:
-        with open(last_block_file, "w") as f:
-            f.write(hex(latest_block))
-    except Exception:
-        pass
-
-    # Scan window: from last scanned block to latest
     if from_block >= latest_block:
         log.debug("No new blocks to scan (%d >= %d)", from_block, latest_block)
         return []
 
-    WINDOW = min(latest_block - from_block, 500)  # cap at 500 to stay in free tier limits
+    WINDOW = min(latest_block - from_block, 500)
     scan_from = max(from_block, latest_block - WINDOW)
     log.info("Scanning blocks %s → %s (%d blocks)", hex(scan_from), hex(latest_block), WINDOW)
 
@@ -224,10 +213,9 @@ def _alchemy_swaps() -> list[dict]:
         log.warning("Alchemy Transfers API failed: %s", e)
         return []
 
-    ZERO_ADDR   = "0x0000000000000000000000000000000000000000"
-    DEPLOYER    = "0x000000000004444c5dc75cb358380d2e3de08a90".lower()
-
-    MIN_COPE = 100  # dust threshold
+    ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+    DEPLOYER  = "0x000000000004444c5dc75cb358380d2e3de08a90".lower()
+    MIN_COPE  = 100
 
     swaps = []
     seen_hashes = set()
@@ -240,13 +228,10 @@ def _alchemy_swaps() -> list[dict]:
             seen_hashes.add(h)
 
             from_addr = t.get("from", "").lower()
-            to_addr   = t.get("to",   "").lower()
 
-            # Skip mints and deployer activity
             if from_addr == ZERO_ADDR or from_addr == DEPLOYER:
                 continue
 
-            # Parse value
             val_raw = t.get("value", 0)
             try:
                 value_cope = float(val_raw)
@@ -263,30 +248,20 @@ def _alchemy_swaps() -> list[dict]:
             except Exception:
                 timestamp = datetime.now(timezone.utc)
 
-            maker = from_addr
-
-            # Determine side
-            side = "BUY"  # default: from a real wallet → to someone (buy or internal)
-
-            # Simple heuristic: if the COPE value is large and it's not going to a known
-            # exchange/hot wallet pattern, treat it as a buy
-            # For V4 hooks: the direction doesn't cleanly distinguish buy/sell without
-            # the ETH leg. Post as BUY for any non-deployer, non-mint, non-zero transfer.
-
             swaps.append({
                 "tx_hash":      h,
                 "block_number": block,
                 "timestamp":    timestamp,
                 "pair":         "COPE/ETH",
-                "side":         side,
+                "side":         "BUY",
                 "amount_cope":  value_cope,
                 "amount_eth":   0.0,
                 "price_usd":    0.0,
-                "maker":        maker,
+                "maker":        from_addr,
             })
 
-        except (ValueError, TypeError, KeyError) as e:
-            log.debug("Skipping malformed transfer: %s", e)
+        except (ValueError, TypeError, KeyError):
+            log.debug("Skipping malformed transfer: %s", t)
             continue
 
     if swaps:
@@ -296,7 +271,7 @@ def _alchemy_swaps() -> list[dict]:
 
 # ── Main export ────────────────────────────────────────
 
-async def fetch_recent_swaps() -> list[dict]:
+async def fetch_recent_swaps(session) -> list[dict]:
     """
     Fetch recent COPE swaps from primary (DexScreener) and fallback (Alchemy).
     Deduplicates by tx_hash.
@@ -306,13 +281,8 @@ async def fetch_recent_swaps() -> list[dict]:
 
     # 1. DexScreener primary
     dex = _dexswaps()
-    if dex:
-        for s in dex:
-            s["price_usd"] = eth_price
-        all_swaps.extend(dex)
-    else:
-        # 2. Alchemy fallback (only if DexScreener returned nothing)
-        alchemy = _alchemy_swaps()
+    # 2. Alchemy fallback (always run, DexScreener only has 24h window)
+    alchemy = _alchemy_swaps(session)
         for s in alchemy:
             s["price_usd"] = eth_price
         all_swaps.extend(alchemy)

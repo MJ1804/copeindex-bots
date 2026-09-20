@@ -46,12 +46,12 @@ COPE_BUY_IMAGE  = os.environ.get(
 
 # ── Swap detection (placeholder) ────────────────────────
 
-async def fetch_recent_swaps() -> list[dict]:
+async def fetch_recent_swaps(session) -> list[dict]:
     """
     Poll Alchemy for recent COPE Transfer events involving the Uniswap pool.
     Delegated to swap_detector.py.
     """
-    return await _fetch_swaps()
+    return await _fetch_swaps(session)
 
 
 # ── Formatting ──────────────────────────────────────────
@@ -84,7 +84,7 @@ async def process_swaps():
     bot = Bot(token=FEED_BOT_TOKEN)
 
     try:
-        swaps = await fetch_recent_swaps()
+        swaps = await fetch_recent_swaps(session)
 
         for sw in swaps:
             # Deduplicate

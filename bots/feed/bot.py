@@ -7,8 +7,10 @@ Filters:
   - Deduplicates via swap_events.tx_hash unique constraint
   - Stores swap history in Neon DB
 
-Phase 8 integration:
-  - Replace placeholder with real Uniswap V4 event query
+Swap detection:
+  - Alchemy Transfers API polling every 15s (no trace API needed)
+  - Scans Transfer events on COPE ERC-20 contract
+  - Transfer TO pool = BUY, Transfer FROM pool = SELL
 """
 
 import asyncio
@@ -25,6 +27,8 @@ from shared.config import (
     FEED_CHANNEL_ID,
 )
 from shared.models import SwapEvent, get_engine, get_session
+
+from bots.feed.swap_detector import fetch_recent_swaps as _fetch_swaps
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,15 +48,10 @@ COPE_BUY_IMAGE  = os.environ.get(
 
 async def fetch_recent_swaps() -> list[dict]:
     """
-    Query Uniswap V4 pool events for recent COPE/ETH swaps.
-
-    Returns list of dicts:
-        {tx_hash, block_number, timestamp, side, amount_cope, amount_eth, price_usd, maker}
-
-    Placeholder — replace with real Uniswap V4 event query in Phase 8.
+    Poll Alchemy for recent COPE Transfer events involving the Uniswap pool.
+    Delegated to swap_detector.py.
     """
-    # TODO: Real Uniswap V4 swap event query (web3.py / Alchemy / Infura)
-    return []
+    return await _fetch_swaps()
 
 
 # ── Formatting ──────────────────────────────────────────

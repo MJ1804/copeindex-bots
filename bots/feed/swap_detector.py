@@ -73,7 +73,7 @@ def _fetch_dexswaps() -> list[dict]:
     amount_cope, amount_eth, price_usd, maker}.
     """
     url = (
-        f"https://api.dexscreener.com/orders/v1/ethereum/{DEXSCRAPER_PAIR}"
+        f"https://api.dexscreener.com/latest/dex/tokens/{COPE_TOKEN_ADDRESS}"
     )
     try:
         resp = requests.get(url, timeout=10)
@@ -83,9 +83,18 @@ def _fetch_dexswaps() -> list[dict]:
         log.warning("DexScreener request failed: %s", e)
         return []
 
-    # Accept both {data: [...]} and direct [...]
+    # Accept {pairs: [{..., txns: {h1: {buys:[], sells:[]}}}]}
     if isinstance(data, dict):
-        txs = data.get("data", [])
+        pairs = data.get("pairs", [])
+        txs = []
+        # Each pair may have a swap history — extract most recent
+        for pair in pairs:
+            pair_txs = pair.get("txns", {})
+            for period in ("h1", "h6", "h24"):
+                period_data = pair_txs.get(period, {})
+                for tx in period_data.get("buys", []) + period_data.get("sells", []):
+                    tx["_pair_address"] = pair.get("pairAddress", "")
+                    txs.append(tx)
     elif isinstance(data, list):
         txs = data
     else:
@@ -185,24 +194,14 @@ def _alchemy_transfers() -> list[dict]:
     WINDOW = 20  # ~5 min at 12s blocks
     from_block = max(1, latest_block - WINDOW)
 
-    # Build transfer filters
-    params_buy = {
-        "fromBlock": hex(from_block),
-        "toBlock":   hex(latest_block),
-        "fromAddress": "[not " + COPE_TOKEN_ADDRESS + "]",  # any non-token address
-        "toAddress":   pool_addr,
-        "category":    ["token"],
-        "withABI":     True,
-    }
-
-    # Simpler: just scan ALL COPE transfers, then filter
+    # Scan all COPE transfers, then filter by pool address for side
     body = {
         "id": 1, "jsonrpc": "2.0", "method": "alchemy_getAssetTransfers",
         "params": [{
             "fromBlock": hex(from_block),
             "toBlock":   "latest",
             "contractAddresses": [COPE_TOKEN_ADDRESS],
-            "category":   ["token"],
+            "category":   ["erc20"],
             "withABI":    True,
         }],
     }

@@ -17,12 +17,12 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select, func
+from sqlalchemy import select, func, desc
 from telegram import Bot
 from telegram.error import TelegramError
 
 from shared.config import CROWN_BOT_TOKEN, CROWN_CHANNEL_ID
-from shared.models import CrownWinner, get_engine, get_session
+from shared.models import CrownWinner, ChatMessage, get_engine, get_session
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,9 +37,9 @@ async def pick_daily_winner(db_session) -> dict:
     """
     Select today's Crown winner.
 
-    Current fallback: picks the most recent entry if one exists for today,
-    otherwise returns a placeholder.  When integrated with the main CopeIndex
-    bot, this will query chat_messages for highest points in the prior UTC day.
+    Crown goes to whoever topped the grind leaderboard for the current UTC day.
+    Queries chat_messages for the highest cumulative points since 00:00 UTC.
+    Falls back to a placeholder if no messages were recorded.
     """
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -51,12 +51,36 @@ async def pick_daily_winner(db_session) -> dict:
         log.info("Crown already awarded today → %s", existing.username)
         return None
 
-    # ── Placeholder — replace with real scoring ──
-    # TODO: query chat_messages for top user by points in prior UTC day
+    # Find top scorer from today's grind messages
+    top = db_session.execute(
+        select(
+            ChatMessage.user_id,
+            ChatMessage.username,
+            func.sum(ChatMessage.points).label("total"),
+            func.count(ChatMessage.id).label("msgs"),
+        )
+        .where(ChatMessage.posted_at >= today)
+        .group_by(ChatMessage.user_id, ChatMessage.username)
+        .order_by(desc("total"))
+        .limit(1)
+    ).first()
+
+    if top:
+        log.info("Top scorer today → %s with %d pts (%d msgs)",
+                 top.username, top.total, top.msgs)
+        return {
+            "user_id": top.user_id,
+            "username": top.username or top.user_id,
+            "message_text": f"Topped the daily grind with {top.total} pts from {top.msgs} messages",
+            "total_cope": 0,
+            "burned_cope": 0,
+        }
+
+    log.info("No grind messages today — bootstrap mode")
     return {
         "user_id": "placeholder",
         "username": "anon",
-        "message_text": "(no messages yet — bootstrap mode)",
+        "message_text": "(no messages today — bootstrap mode)",
         "total_cope": 0,
         "burned_cope": 0,
     }
@@ -66,13 +90,10 @@ async def pick_daily_winner(db_session) -> dict:
 
 def build_announcement(winner: dict) -> str:
     """Render the Crown announcement message."""
-    # TODO: Gradient emoji + crown ASCII art (phase 7 polish)
     return (
         f"👑 <b>Crown of the Day</b> — {datetime.now(timezone.utc).strftime('%B %d, %Y')}\n\n"
         f"🏆 @{winner['username']}\n"
-        f"💬 \"{winner.get('message_text', '...')}\"\n\n"
-        f"🔥 <b>COPE Burned:</b> {winner['burned_cope']:,.0f}\n"
-        f"📊 <b>Total COPE:</b> {winner['total_cope']:,.0f}\n\n"
+        f"💬 {winner.get('message_text', '...')}\n\n"
         f"📩 <b>Winner, DM @ReadKearns to claim.</b>\n\n"
         f"<i>The Crown burns again tomorrow at 00:05 UTC.</i>"
     )
@@ -92,9 +113,7 @@ async def crown_job():
 
         text = build_announcement(winner)
 
-        # ── Burn COPE (placeholder) ──
-        # TODO (Phase 8): call burn contract, get tx_hash
-        # tx_hash = burn_cope(winner["burned_cope"])
+        # tx_hash reserved for Phase 8 if a COPE burn mechanism is added
         tx_hash = None
 
         # ── Persist ──

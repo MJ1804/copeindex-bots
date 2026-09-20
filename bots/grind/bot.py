@@ -176,6 +176,37 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         engine.dispose()
 
 
+async def cmd_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/leaderboard — alias for /rank."""
+    await cmd_rank(update, context)
+
+
+# ── Rules ───────────────────────────────────────────────
+
+async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /rules."""
+    if not update.effective_chat:
+        return
+    text = (
+        "🎮 <b>Grind Leaderboard — Rules</b>\n\n"
+        "Every message earns points based on quality:\n"
+        "• 1 pt — any message\n"
+        "• +1 pt — message over 140 chars\n"
+        "• +2 pts — message over 500 chars\n"
+        "• +1 pt — reply to another user\n"
+        "• +1 pt — includes photo/sticker/media\n"
+        "• Max 5 pts per message\n\n"
+        "<b>Commands:</b>\n"
+        "/rank — view this week's leaderboard\n"
+        "/leaderboard — same as /rank\n"
+        "/rules — this message\n\n"
+        "<i>Leaderboard resets every Sunday at 00:10 UTC.</i>"
+    )
+    await update.message.reply_text(
+        text, parse_mode="HTML", disable_web_page_preview=True
+    )
+
+
 # ── Weekly post ─────────────────────────────────────────
 
 async def weekly_leaderboard_post():
@@ -243,17 +274,32 @@ async def main():
         handle_message,
     ))
     app.add_handler(CommandHandler("rank", cmd_rank))
+    app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
+    app.add_handler(CommandHandler("rules", cmd_rules))
 
     # Weekly leaderboard every Sunday at 00:10 UTC
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(weekly_leaderboard_post, "cron", day_of_week="sun", hour=0, minute=10)
     scheduler.start()
 
+    # Start manually instead of run_polling() — avoids signal-handler
+    # registration that crashes in non-main threads on Python 3.13.
+    await app.initialize()
+    await app.updater.start_polling(drop_pending_updates=True)
+    await app.start()
     log.info("Polling for messages + /rank command + weekly post ready")
+
+    # Keep alive until cancelled
+    stop = asyncio.Event()
     try:
-        await app.run_polling(drop_pending_updates=True)
-    except KeyboardInterrupt:
-        log.info("Shutting down")
+        await stop.wait()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await app.stop()
+        await app.updater.stop()
+        await app.shutdown()
+        log.info("Grind bot stopped")
 
 
 if __name__ == "__main__":

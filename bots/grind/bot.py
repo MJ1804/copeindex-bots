@@ -37,7 +37,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("grind")
 
-RATE_LIMIT_DELAY = float(os.environ.get("GRIND_RATE_LIMIT_DELAY", "0.05"))
+RATE_LIMIT_DELAY = float(os.environ.get("GRIND_RANK_DELAY", "0.05"))
+
+# Minimum user_id — Telegram IDs below this are from before ~2016.
+# Fresh accounts have IDs in the billions; set higher to gate by account age.
+# Default ~500M = roughly 2016. Raise to ~5B for accounts created after ~2020.
+MIN_USER_ID = int(os.environ.get("GRIND_MIN_USER_ID", "500_000_000"))
 
 
 # ── Scoring ─────────────────────────────────────────────
@@ -74,6 +79,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = update.message
     user = update.effective_user
+
+    # ── Sybil gate: username required ──
+    if not user.username:
+        log.debug("ignored %s — no username set", user.id)
+        return
+
+    # ── Sybil gate: account age (user_id ≈ creation date) ──
+    if user.id < MIN_USER_ID:
+        log.debug("ignored %s — account too new (id=%d < %d)",
+                  user.id, user.id, MIN_USER_ID)
+        return
 
     engine = get_engine()
     session = get_session(engine)

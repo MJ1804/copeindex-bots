@@ -288,11 +288,15 @@ async def fetch_recent_swaps(session) -> list[dict]:
 
     # 1. DexScreener primary
     dex = _dexswaps()
+    for s in dex:
+        s["price_usd"] = eth_price
+    all_swaps.extend(dex)
+
     # 2. Alchemy fallback (always run, DexScreener only has 24h window)
     alchemy = _alchemy_swaps(session)
-        for s in alchemy:
-            s["price_usd"] = eth_price
-        all_swaps.extend(alchemy)
+    for s in alchemy:
+        s["price_usd"] = eth_price
+    all_swaps.extend(alchemy)
 
     # Deduplicate
     seen, unique = set(), []
@@ -301,5 +305,7 @@ async def fetch_recent_swaps(session) -> list[dict]:
             seen.add(s["tx_hash"])
             unique.append(s)
 
+    log.info("Total unique swaps to process: %d", len(unique))
+    return unique
     log.info("Total unique swaps to process: %d", len(unique))
     return unique

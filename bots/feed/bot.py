@@ -58,10 +58,19 @@ async def fetch_recent_swaps(session) -> list[dict]:
 
 def should_post(swap: dict) -> bool:
     """Only post buys ≥ BUY_MIN_USD threshold."""
-    return (
-        swap.get("side") == "BUY"
-        and (swap.get("price_usd") or 0) * swap.get("amount_cope", 0) >= BUY_MIN_USD
-    )
+    eth_val  = swap.get("amount_eth", 0)
+    price_usd = swap.get("price_usd") or 0
+    amount_cope = swap.get("amount_cope", 0)
+    if eth_val > 0 and price_usd > 0:
+        usd = eth_val * price_usd
+    else:
+        usd = price_usd * amount_cope
+    passes = swap.get("side") == "BUY" and usd >= BUY_MIN_USD
+    if not passes and amount_cope > 0:
+        log.debug("Skipping %s — side=%s usd=%.2f (need %.2f) cope=%.0f eth=%.4f",
+                  swap.get("tx_hash","?")[:10], swap.get("side"),
+                  usd, BUY_MIN_USD, amount_cope, eth_val)
+    return passes
 
 
 def format_swap(swap: dict) -> str:

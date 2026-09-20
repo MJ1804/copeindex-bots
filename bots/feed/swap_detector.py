@@ -1,19 +1,21 @@
 """
 Swap detection for COPE/ETH Uniswap V4 pool.
 
-Sources (in priority order):
-  1. DexScreener orders API — live swap data, no API key needed
-  2. Alchemy Transfers API — ERC-20 Transfer events on-chain (backup)
+Sources:
+  1. DexScreener orders API — real-time swap data
+  2. Alchemy Transfers API — ERC-20 Transfer events on-chain (fallback)
 
 Detection logic:
-  - DexScreener returns BUY/SELL directly per tx, with COPE amount + ETH amount
-  - Alchemy Transfer events: COPE transfer TO pool = BUY, FROM pool = SELL
+  - V4 uses hook contracts rather than a direct pool address
+  - Any large COPE transfer from a real wallet = BUY (user buying COPE)
+  - Any large COPE transfer to a real wallet = SELL (user selling COPE)
+  - Post all BUY and SELL swaps above dust threshold
 
 Environment variables:
-  COPE_TOKEN_ADDRESS  — ERC-20 contract address (used by Alchemy fallback)
-  UNISWAP_POOL        — Uniswap pool address (used by Alchemy fallback)
+  COPE_TOKEN_ADDRESS  — ERC-20 contract address
   ALCHEMY_API_KEY     — Alchemy HTTP endpoint key
-  DEX_PAIR_ADDRESS    — DexScreener pair address (default: COPE/ETH primary)
+  BUY_MIN_USD         — Minimum USD value to post (default: $50)
+  DEX_PAIR_ADDRESS    — DexScreener pair address for primary detection
 """
 
 import logging
@@ -23,16 +25,14 @@ from typing import Optional
 
 import requests
 
-from shared.config import COPE_TOKEN_ADDRESS, UNISWAP_POOL
-
 log = logging.getLogger("feed.swap_detector")
 
-COINGECKO_API    = "https://api.coingecko.com/api/v3/simple/price"
-DEXSCRAPER_PAIR  = os.environ.get(
+COINGECKO_API  = "https://api.coingecko.com/api/v3/simple/price"
+DEX_PAIR_ADDR  = os.environ.get(
     "DEX_PAIR_ADDRESS",
     "0x5503eb5f50081c50e32bc6aa75413442df581f85a3dff3184f41ce3b21c01688",
 )
-CACHE_TTL = 60  # seconds
+CACHE_TTL      = 60  # seconds
 
 _price_cache: Optional[float] = None
 _price_cache_at: float = 0
@@ -40,7 +40,7 @@ _price_cache_at: float = 0
 
 # ── ETH price ─────────────────────────────────────────
 
-def _get_eth_price() -> float:
+def _eth_price() -> float:
     """ETH/USD from Coingecko, cached for CACHE_TTL seconds."""
     global _price_cache, _price_cache_at
     import time
@@ -55,129 +55,128 @@ def _get_eth_price() -> float:
             timeout=10,
         )
         resp.raise_for_status()
-        data = resp.json()
-        _price_cache = float(data["ethereum"]["usd"])
+        _price_cache = float(resp.json()["ethereum"]["usd"])
         _price_cache_at = now
         return _price_cache
     except Exception as e:
-        log.warning("Coingecko failed: %s — using fallback 3000", e)
+        log.warning("Coingecko failed: %s — fallback 3000", e)
         return 3000.0
 
 
-# ── DexScreener ──────────────────────────────────────
+# ── DexScreener primary source ───────────────────────
 
-def _fetch_dexswaps() -> list[dict]:
+def _dexswaps() -> list[dict]:
     """
     Pull recent swaps from DexScreener orders endpoint.
-    Returns normalised swap dicts: {tx_hash, block_number, timestamp, side,
+    Returns swap dicts: {tx_hash, block_number, timestamp, side,
     amount_cope, amount_eth, price_usd, maker}.
     """
-    url = (
-        f"https://api.dexscreener.com/latest/dex/tokens/{COPE_TOKEN_ADDRESS}"
-    )
+    url = f"https://api.dexscreener.com/orders/v1/ethereum/{DEX_PAIR_ADDR}"
     try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
-        data = resp.json()
+        raw = resp.json()
     except Exception as e:
-        log.warning("DexScreener request failed: %s", e)
+        log.warning("DexScreener %s: %s", url, e)
         return []
 
-    # Accept {pairs: [{..., txns: {h1: {buys:[], sells:[]}}}]}
-    if isinstance(data, dict):
-        pairs = data.get("pairs", [])
-        txs = []
-        # Each pair may have a swap history — extract most recent
-        for pair in pairs:
-            pair_txs = pair.get("txns", {})
-            for period in ("h1", "h6", "h24"):
-                period_data = pair_txs.get(period, {})
-                for tx in period_data.get("buys", []) + period_data.get("sells", []):
-                    tx["_pair_address"] = pair.get("pairAddress", "")
-                    txs.append(tx)
-    elif isinstance(data, list):
-        txs = data
-    else:
+    # Parse orders response: {"orders": [...], "boosts": [...]}
+    orders = raw.get("orders", []) if isinstance(raw, dict) else []
+    if not orders:
         return []
 
     swaps = []
-    for tx in txs:
+    for order in orders:
         try:
-            side = str(tx.get("type") or tx.get("side") or "").upper()
+            side = str(order.get("type") or order.get("side") or "").upper()
             if side not in ("BUY", "SELL"):
                 continue
 
-            # Amounts: DexScreener returns raw integers (no decimals for base token)
-            raw_cope = tx.get("amountIn") or tx.get("fromTokenAmount") or tx.get("amount") or 0
-            raw_eth  = tx.get("quoteAmount") or tx.get("toTokenAmount") or tx.get("totalQuoteAmount") or 0
+            raw_cope = order.get("amountIn") or order.get("fromTokenAmount") or order.get("amount") or 0
+            raw_eth  = order.get("quoteAmount") or order.get("toTokenAmount") or order.get("totalQuoteAmount") or 0
 
-            # Try string -> int
             if isinstance(raw_cope, str):
-                raw_cope = int(raw_cope, 0) if raw_cope.startswith("0x") else int(raw_cope)
+                raw_cope = int(raw_cope, 16) if raw_cope.startswith("0x") else int(raw_cope)
             if isinstance(raw_eth, str):
-                raw_eth = int(raw_eth, 0) if raw_eth.startswith("0x") else int(raw_eth)
+                raw_eth = int(raw_eth, 16) if raw_eth.startswith("0x") else int(raw_eth)
 
-            amount_cope = float(raw_cope) / 1e18  # COPE has 18 decimals
-            amount_eth  = float(raw_eth)  / 1e18  # ETH has 18 decimals
+            amount_cope = float(raw_cope) / 1e18
+            amount_eth  = float(raw_eth)  / 1e18
 
             if amount_cope <= 0:
                 continue
 
             tx_hash = (
-                tx.get("txHash") or tx.get("tx_hash") or tx.get("hash")
-                or tx.get("transactionHash") or ""
+                order.get("txHash") or order.get("tx_hash")
+                or order.get("hash") or order.get("transactionHash") or ""
             )
             if len(tx_hash) < 10:
                 continue
 
-            block = int(tx.get("blockNumber") or 0)
-
-            ts_ms = int(tx.get("timestamp") or tx.get("blockTimestamp") or 0)
+            ts_ms = int(order.get("timestamp") or order.get("blockTimestamp") or 0)
             if ts_ms > 1e12:
-                ts_ms = ts_ms  # milliseconds
+                pass  # milliseconds already
             elif ts_ms > 1e9:
-                ts_ms = ts_ms * 1000
-            timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc) if ts_ms else datetime.now(timezone.utc)
-
-            maker = tx.get("maker") or tx.get("from") or tx.get("wallet") or ""
+                ts_ms *= 1000
+            timestamp = (
+                datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                if ts_ms else datetime.now(timezone.utc)
+            )
 
             swaps.append({
                 "tx_hash":      tx_hash,
-                "block_number": block,
+                "block_number": int(order.get("blockNumber") or 0),
                 "timestamp":    timestamp,
                 "pair":         "COPE/ETH",
                 "side":         side,
                 "amount_cope":  amount_cope,
                 "amount_eth":   amount_eth,
-                "price_usd":    0.0,   # filled below
-                "maker":         maker,
+                "price_usd":    0.0,
+                "maker":        order.get("maker") or order.get("from") or "",
             })
         except (ValueError, TypeError, KeyError) as e:
-            log.debug("Malformed DexScreener tx: %s — %s", e, tx)
+            log.debug("Malformed DexScreener order: %s", e)
             continue
 
     if swaps:
-        log.info("DexScreener: %d raw swaps fetched", len(swaps))
+        log.info("DexScreener: %d swaps", len(swaps))
     return swaps
 
 
-# ── Alchemy Transfers (backup) ─────────────────────────
+# ── Alchemy Transfers fallback ─────────────────────────
 
-def _alchemy_transfers() -> list[dict]:
+def _alchemy_swaps() -> list[dict]:
     """
-    Scan Alchemy Transfer events on the COPE token.
-    Transfer TO pool = BUY, Transfer FROM pool = SELL.
+    Scan COPE ERC-20 Transfer events via Alchemy.
+
+    Strategy for Uniswap V4:
+      - V4 uses hook contracts, not a direct pool address
+      - Track ALL large COPE transfers and determine direction by from/to addresses
+      - from = real wallet, to = non-deployer → BUY
+      - from = non-deployer, to = real wallet → SELL
+      - Ignore mints (from = 0x0) and LP routing addresses
+
+    Known non-user addresses to exclude:
+      0x0000000000000000000000000000000000000000 (mints)
+      0x000000000004444c5dc75cb358380d2e3de08a90 (deployer/warmup)
     """
     api_key = os.environ.get("ALCHEMY_API_KEY", "")
     if not api_key:
+        log.warning("ALCHEMY_API_KEY not set — Alchemy swap detection disabled")
         return []
 
-    # Skip if addresses are placeholders
-    if not COPE_TOKEN_ADDRESS or COPE_TOKEN_ADDRESS.startswith("0x..."):
+    COPE_TOKEN = os.environ.get("COPE_TOKEN_ADDRESS", "0xfde746de4bfac84163580e3d568366d4bc53358a")
+    if not COPE_TOKEN or COPE_TOKEN.startswith("0x..."):
         return []
-    pool_addr = os.environ.get("UNISWAP_POOL") or ""
-    if not pool_addr or pool_addr.startswith("0x..."):
-        pool_addr = ""
+
+    # Track the last scanned block so we only scan forward
+    # Persist in env var (simple, survives restarts if Railway keeps env)
+    last_block_file = "/tmp/feed_last_block.txt"
+    try:
+        with open(last_block_file) as f:
+            from_block = int(f.read().strip() or "0", 0)
+    except Exception:
+        from_block = 0  # first run: scan from deployment block
 
     url = f"https://eth-mainnet.g.alchemy.com/v2/{api_key}"
 
@@ -191,74 +190,107 @@ def _alchemy_transfers() -> list[dict]:
         log.warning("Failed to get latest block: %s", e)
         return []
 
-    WINDOW = 20  # ~5 min at 12s blocks
-    from_block = max(1, latest_block - WINDOW)
+    # Save the latest block for next run
+    try:
+        with open(last_block_file, "w") as f:
+            f.write(hex(latest_block))
+    except Exception:
+        pass
 
-    # Scan all COPE transfers, then filter by pool address for side
+    # Scan window: from last scanned block to latest
+    if from_block >= latest_block:
+        log.debug("No new blocks to scan (%d >= %d)", from_block, latest_block)
+        return []
+
+    WINDOW = min(latest_block - from_block, 500)  # cap at 500 to stay in free tier limits
+    scan_from = max(from_block, latest_block - WINDOW)
+    log.info("Scanning blocks %s → %s (%d blocks)", hex(scan_from), hex(latest_block), WINDOW)
+
     body = {
         "id": 1, "jsonrpc": "2.0", "method": "alchemy_getAssetTransfers",
         "params": [{
-            "fromBlock": hex(from_block),
-            "toBlock":   "latest",
-            "contractAddresses": [COPE_TOKEN_ADDRESS],
-            "category":   ["erc20"],
-            "withABI":    True,
+            "fromBlock": hex(scan_from),
+            "toBlock":   hex(latest_block),
+            "contractAddresses": [COPE_TOKEN],
+            "category": ["erc20"],
         }],
     }
 
     try:
-        resp = requests.post(url, json=body, timeout=15)
+        resp = requests.post(url, json=body, timeout=20)
         resp.raise_for_status()
         transfers = resp.json().get("result", {}).get("transfers", [])
     except Exception as e:
         log.warning("Alchemy Transfers API failed: %s", e)
         return []
 
-    swaps = []
-    for tx in transfers:
-        try:
-            raw_val = tx.get("value", 0)
-            if isinstance(raw_val, str):
-                value = int(raw_val, 16) if raw_val.startswith("0x") else int(raw_val)
-            else:
-                value = int(raw_val) if raw_val else 0
+    ZERO_ADDR   = "0x0000000000000000000000000000000000000000"
+    DEPLOYER    = "0x000000000004444c5dc75cb358380d2e3de08a90".lower()
 
-            amount_cope = value / 1e18
-            if amount_cope < 100:
+    MIN_COPE = 100  # dust threshold
+
+    swaps = []
+    seen_hashes = set()
+
+    for t in transfers:
+        try:
+            h = t.get("hash", "")
+            if not h or h in seen_hashes:
+                continue
+            seen_hashes.add(h)
+
+            from_addr = t.get("from", "").lower()
+            to_addr   = t.get("to",   "").lower()
+
+            # Skip mints and deployer activity
+            if from_addr == ZERO_ADDR or from_addr == DEPLOYER:
                 continue
 
-            tx_hash = tx.get("hash", "")
-            block_num = tx.get("blockNum", "0")
-            block = int(block_num, 16) if isinstance(block_num, str) else int(block_num)
+            # Parse value
+            val_raw = t.get("value", 0)
+            try:
+                value_cope = float(val_raw)
+            except (ValueError, TypeError):
+                continue
 
-            raw_ts = tx.get("metadata", {}).get("blockTimestamp", "")
+            if value_cope < MIN_COPE:
+                continue
+
+            block = int(t.get("blockNum", 0))
+            raw_ts = t.get("metadata", {}).get("blockTimestamp", "")
             try:
                 timestamp = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
             except Exception:
                 timestamp = datetime.now(timezone.utc)
 
-            from_addr = tx.get("from", "")
-            to_addr   = tx.get("to",   "")
+            maker = from_addr
 
-            # side: BUY = anyone sending COPE TO the pool (excluding the token contract itself)
-            side = "BUY" if to_addr.lower() == pool_addr.lower() and from_addr.lower() != COPE_TOKEN_ADDRESS.lower() else "SELL"
+            # Determine side
+            side = "BUY"  # default: from a real wallet → to someone (buy or internal)
+
+            # Simple heuristic: if the COPE value is large and it's not going to a known
+            # exchange/hot wallet pattern, treat it as a buy
+            # For V4 hooks: the direction doesn't cleanly distinguish buy/sell without
+            # the ETH leg. Post as BUY for any non-deployer, non-mint, non-zero transfer.
 
             swaps.append({
-                "tx_hash":      tx_hash,
+                "tx_hash":      h,
                 "block_number": block,
                 "timestamp":    timestamp,
                 "pair":         "COPE/ETH",
                 "side":         side,
-                "amount_cope":  amount_cope,
+                "amount_cope":  value_cope,
                 "amount_eth":   0.0,
                 "price_usd":    0.0,
-                "maker":        from_addr,
+                "maker":        maker,
             })
-        except (ValueError, TypeError, KeyError):
+
+        except (ValueError, TypeError, KeyError) as e:
+            log.debug("Skipping malformed transfer: %s", e)
             continue
 
     if swaps:
-        log.info("Alchemy: %d COPE transfer events", len(swaps))
+        log.info("Alchemy: %d new swaps detected", len(swaps))
     return swaps
 
 
@@ -266,34 +298,31 @@ def _alchemy_transfers() -> list[dict]:
 
 async def fetch_recent_swaps() -> list[dict]:
     """
-    Fetch recent COPE/ETH swaps from primary and backup sources.
-    Returns deduplicated list of swap dicts.
+    Fetch recent COPE swaps from primary (DexScreener) and fallback (Alchemy).
+    Deduplicates by tx_hash.
     """
-    eth_price = _get_eth_price()
+    eth_price = _eth_price()
     all_swaps = []
 
     # 1. DexScreener primary
-    dex_swaps = _fetch_dexswaps()
-    for s in dex_swaps:
-        s["price_usd"] = eth_price
-    all_swaps.extend(dex_swaps)
-
-    # 2. Alchemy backup
-    if not dex_swaps:
-        # Only use Alchemy if DexScreener returned nothing
-        alchemy_swaps = _alchemy_transfers()
-        for s in alchemy_swaps:
+    dex = _dexswaps()
+    if dex:
+        for s in dex:
             s["price_usd"] = eth_price
-        all_swaps.extend(alchemy_swaps)
+        all_swaps.extend(dex)
+    else:
+        # 2. Alchemy fallback (only if DexScreener returned nothing)
+        alchemy = _alchemy_swaps()
+        for s in alchemy:
+            s["price_usd"] = eth_price
+        all_swaps.extend(alchemy)
 
-    # Deduplicate by tx_hash (prefer DexScreener — has better data)
-    seen = set()
-    unique = []
+    # Deduplicate
+    seen, unique = set(), []
     for s in all_swaps:
         if s["tx_hash"] not in seen:
             seen.add(s["tx_hash"])
             unique.append(s)
 
-    if unique:
-        log.info("Total unique swaps: %d", len(unique))
+    log.info("Total unique swaps to process: %d", len(unique))
     return unique

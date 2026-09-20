@@ -286,14 +286,16 @@ async def main():
     engine.dispose()
 
     app = Application.builder().token(GRIND_BOT_TOKEN).build()
-    app.add_handler(MessageHandler(
-        filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Sticker.ALL | filters.Document.ALL,
-        handle_message,
-    ))
+    # Command handlers MUST be registered BEFORE MessageHandler —
+    # otherwise /commands get swallowed as regular text messages.
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("rank", cmd_rank))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("rules", cmd_rules))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND | filters.PHOTO | filters.VIDEO | filters.Sticker.ALL | filters.Document.ALL,
+        handle_message,
+    ))
 
     # Weekly leaderboard every Sunday at 00:10 UTC
     scheduler = AsyncIOScheduler(timezone="UTC")

@@ -118,6 +118,11 @@ async def fetch_recent_swaps() -> list[dict]:
     """
     from_block_str = os.environ.get("FEED_SCAN_FROM_BLOCK", "latest")
 
+    # Skip if addresses are still placeholders (not yet deployed by Fusing)
+    if (not COPE_TOKEN_ADDRESS or COPE_TOKEN_ADDRESS.startswith("0x...") or
+        not UNISWAP_POOL or UNISWAP_POOL.startswith("0x...")):
+        return []
+
     # Get latest block
     api_key = os.environ.get("ALCHEMY_API_KEY", "")
     if not api_key:

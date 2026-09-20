@@ -128,15 +128,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         engine.dispose()
 
 
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test — should reply instantly without any DB calls."""
+    log.info("cmd_ping called from %s", update.effective_user)
+    try:
+        await update.message.reply_text("🏓 pong — grind bot alive")
+    except Exception as e:
+        log.exception("ping reply failed: %s", e)
+
+
 async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /rank — show current week top 10."""
+    log.info("cmd_rank called from %s in chat %s", update.effective_user, update.effective_chat)
     if not update.effective_chat:
+        log.error("cmd_rank: no effective_chat")
         return
 
-    engine = get_engine()
-    session = get_session(engine)
+    try:
+        engine = get_engine()
+        session = get_session(engine)
+    except Exception as e:
+        log.exception("cmd_rank: DB connect failed: %s", e)
+        return
 
     week = week_label()
+    log.info("cmd_rank: querying week=%s", week)
     rows = session.execute(
         select(
             ChatMessage.username,
@@ -148,6 +164,7 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         .order_by(desc("total"))
         .limit(10)
     ).all()
+    log.info("cmd_rank: got %d rows", len(rows))
 
     if not rows:
         text = (
@@ -273,6 +290,7 @@ async def main():
         filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Sticker.ALL | filters.Document.ALL,
         handle_message,
     ))
+    app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("rank", cmd_rank))
     app.add_handler(CommandHandler("leaderboard", cmd_leaderboard))
     app.add_handler(CommandHandler("rules", cmd_rules))

@@ -86,6 +86,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     user = update.effective_user
 
+    # ── Sybil gate: no bots ──
+    if user.is_bot:
+        log.debug("ignored %s — bot account", user.id)
+        return
+
     # ── Sybil gate: username required ──
     if not user.username:
         log.debug("ignored %s — no username set", user.id)

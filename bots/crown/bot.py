@@ -73,6 +73,7 @@ def build_announcement(winner: dict) -> str:
         f"💬 \"{winner.get('message_text', '...')}\"\n\n"
         f"🔥 <b>COPE Burned:</b> {winner['burned_cope']:,.0f}\n"
         f"📊 <b>Total COPE:</b> {winner['total_cope']:,.0f}\n\n"
+        f"📩 <b>Winner, DM @ReadKearns to claim.</b>\n\n"
         f"<i>The Crown burns again tomorrow at 00:05 UTC.</i>"
     )
 

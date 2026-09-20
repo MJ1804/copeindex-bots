@@ -174,14 +174,14 @@ async def weekly_leaderboard_post():
     ).all()
 
     if rows and GRIND_CHANNEL_ID:
-        lines = [f"📊 <b>Final Leaderboard</b> — {last_week}\n"]
+        lines = [f"🏆 <b>WEEK {last_week} WINNER</b>\n@{rows[0].username} — {rows[0].total} pts\n\n📊 <b>Final Leaderboard</b>\n"]
         medals = ["🥇", "🥈", "🥉"]
         for i, row in enumerate(rows):
             prefix = medals[i] if i < 3 else f"{i+1}."
             lines.append(
                 f"{prefix} @{row.username} — <b>{row.total} pts</b> ({row.msgs} msgs)"
             )
-        text = "\n".join(lines)
+        text = "\n".join(lines) + "\n\n🏆 <b>Winner, DM @ReadKearns to claim.</b>"
 
         try:
             await bot.send_message(

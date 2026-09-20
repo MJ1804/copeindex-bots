@@ -191,27 +191,34 @@ def _alchemy_swaps(session) -> list[dict]:
         log.debug("No new blocks to scan (%d >= %d)", from_block, latest_block)
         return []
 
-    WINDOW = min(latest_block - from_block, 500)
+    # Alchemy free tier limits each request to 10 blocks — batch in windows
+    WINDOW = min(latest_block - from_block, 1000)  # cap at 1000 to avoid too many requests
     scan_from = max(from_block, latest_block - WINDOW)
-    log.info("Scanning blocks %s → %s (%d blocks)", hex(scan_from), hex(latest_block), WINDOW)
+    log.info("Scanning blocks %s → %s (%d blocks in batches of 10)",
+             hex(scan_from), hex(latest_block), WINDOW)
 
-    body = {
-        "id": 1, "jsonrpc": "2.0", "method": "alchemy_getAssetTransfers",
-        "params": [{
-            "fromBlock": hex(scan_from),
-            "toBlock":   hex(latest_block),
-            "contractAddresses": [COPE_TOKEN],
-            "category": ["erc20"],
-        }],
-    }
+    all_transfers = []
+    for batch_start in range(scan_from, latest_block, 10):
+        batch_end = min(batch_start + 10, latest_block)
+        body = {
+            "id": 1, "jsonrpc": "2.0", "method": "alchemy_getAssetTransfers",
+            "params": [{
+                "fromBlock": hex(batch_start),
+                "toBlock":   hex(batch_end),
+                "contractAddresses": [COPE_TOKEN],
+                "category": ["erc20"],
+            }],
+        }
+        try:
+            resp = requests.post(url, json=body, timeout=20)
+            resp.raise_for_status()
+            batch = resp.json().get("result", {}).get("transfers", [])
+            all_transfers.extend(batch)
+        except Exception as e:
+            log.debug("Alchemy batch %s-%s failed: %s", hex(batch_start), hex(batch_end), e)
+            continue
 
-    try:
-        resp = requests.post(url, json=body, timeout=20)
-        resp.raise_for_status()
-        transfers = resp.json().get("result", {}).get("transfers", [])
-    except Exception as e:
-        log.warning("Alchemy Transfers API failed: %s", e)
-        return []
+    transfers = all_transfers
 
     ZERO_ADDR = "0x0000000000000000000000000000000000000000"
     DEPLOYER  = "0x000000000004444c5dc75cb358380d2e3de08a90".lower()

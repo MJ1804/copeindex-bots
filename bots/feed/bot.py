@@ -37,7 +37,7 @@ logging.basicConfig(
 log = logging.getLogger("feed")
 
 POLL_INTERVAL   = int(os.environ.get("FEED_POLL_SECONDS", "15"))
-BUY_MIN_USD     = float(os.environ.get("BUY_MIN_USD", "50"))
+BUY_MIN_USD     = float(os.environ.get("BUY_MIN_USD", "10"))
 COPE_BUY_IMAGE  = os.environ.get(
     "COPE_BUY_IMAGE",
     "https://raw.githubusercontent.com/MJ1804/copeindex-bots/main/bots/feed/cope_buy.png",

@@ -20,7 +20,10 @@ from sqlalchemy import select
 from telegram import Bot, InputMediaPhoto
 from telegram.error import TelegramError
 
-from shared.config import FEED_BOT_TOKEN, FEED_CHANNEL_ID, COPE_TOKEN_ADDRESS, UNISWAP_POOL
+from shared.config import (
+    FEED_BOT_TOKEN,
+    FEED_CHANNEL_ID,
+)
 from shared.models import SwapEvent, get_engine, get_session
 
 logging.basicConfig(

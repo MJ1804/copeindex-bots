@@ -20,13 +20,19 @@ Point system (tunable):
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select, func, desc
+from sqlalchemy import desc, func, select
 from telegram import Bot, Update
-from telegram.error import TelegramError, RetryAfter
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram.error import TelegramError
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from shared.config import GRIND_BOT_TOKEN, GRIND_CHANNEL_ID
 from shared.models import ChatMessage, get_engine, get_session
@@ -115,6 +121,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.commit()
         log.debug("+%d pt → %s", record.points, record.username)
     except Exception:
+        log.exception("Failed to record message")
         session.rollback()
     finally:
         session.close()
@@ -143,8 +150,9 @@ async def cmd_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ).all()
 
     if not rows:
-        text = "🏆 <b>Weekly Leaderboard</b> — {}\n\n<i>No messages yet this week. Say something!</i>".format(
-            week
+        text = (
+            f"🏆 <b>Weekly Leaderboard</b> — {week}\n\n"
+            f"<i>No messages yet this week. Say something!</i>"
         )
     else:
         lines = [f"🏆 <b>Weekly Leaderboard</b> — {week}\n"]
@@ -190,7 +198,12 @@ async def weekly_leaderboard_post():
     ).all()
 
     if rows and GRIND_CHANNEL_ID:
-        lines = [f"🏆 <b>WEEK {last_week} WINNER</b>\n@{rows[0].username} — {rows[0].total} pts\n\n📊 <b>Final Leaderboard</b>\n"]
+        winner = rows[0]
+        lines = [
+            f"🏆 <b>WEEK {last_week} WINNER</b>\n"
+            f"@{winner.username} — {winner.total} pts\n\n"
+            f"📊 <b>Final Leaderboard</b>\n",
+        ]
         medals = ["🥇", "🥈", "🥉"]
         for i, row in enumerate(rows):
             prefix = medals[i] if i < 3 else f"{i+1}."

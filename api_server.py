@@ -9,16 +9,13 @@ Public routes:
   GET /api/transparency
 """
 
-import os
 import logging
-from datetime import datetime, timezone
-from decimal import Decimal
+import os
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
-from shared.config import DATABASE_POOLED_URL
 from shared.models import CrownWinner, SwapEvent, get_engine, get_session
 
 app = Flask(__name__)
@@ -184,5 +181,5 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [api] %(levelname)s %(message)s",
     )
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)

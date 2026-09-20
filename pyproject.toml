@@ -1,0 +1,13 @@
+[project]
+name = "copeindex-bots"
+version = "0.1.0"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["I", "F", "E", "W", "BLE", "UP", "PLW", "EXE", "B"]
+ignore = ["BLE001"]  # bare `except Exception` — intentional for startup/DB error handling
+
+[tool.ruff.lint.isort]
+known-first-party = ["shared"]

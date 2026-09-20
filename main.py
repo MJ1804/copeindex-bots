@@ -7,7 +7,6 @@ Runs the public HTTP API (Flask, threaded) and all three Telegram bots concurren
 import asyncio
 import logging
 import os
-import sys
 import threading
 
 logging.basicConfig(
@@ -20,7 +19,7 @@ log = logging.getLogger("copeindex")
 def run_api():
     """Start Flask in a daemon thread so it doesn't block the asyncio loop."""
     from api_server import app
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", "8000"))
     log.info(f"API starting on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
 
@@ -45,7 +44,7 @@ async def main():
             if label == "grind":
                 # Grind bot uses telegram Application.run_polling() which breaks
                 # shared event loops — run it in its own thread + loop
-                def _run_grind():
+                def _run_grind(mod=mod):
                     grind_loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(grind_loop)
                     try:
@@ -58,7 +57,6 @@ async def main():
                 log.info("✅ grind registered (threaded)")
                 t = threading.Thread(target=_run_grind, name="grind", daemon=True)
                 t.start()
-                grind_thread = t
             else:
                 log.info(f"✅ {label} registered")
                 tasks.append(asyncio.create_task(mod.main(), name=label))

@@ -14,15 +14,15 @@ Phase 8 integration:
 
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select, func, desc
+from sqlalchemy import desc, func, select
 from telegram import Bot
 from telegram.error import TelegramError
 
 from shared.config import CROWN_BOT_TOKEN, CROWN_CHANNEL_ID
-from shared.models import CrownWinner, ChatMessage, get_engine, get_session
+from shared.models import ChatMessage, CrownWinner, get_engine, get_session
 
 logging.basicConfig(
     level=logging.INFO,

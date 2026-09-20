@@ -15,7 +15,7 @@ import sys
 # Allow running from repo root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.models import get_engine, create_all
+from shared.models import create_all, get_engine
 
 logging.basicConfig(level=logging.INFO)
 
